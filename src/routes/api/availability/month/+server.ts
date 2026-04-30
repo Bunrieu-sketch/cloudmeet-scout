@@ -207,13 +207,18 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			if (date < today || date > maxDate) continue;
 
 			const dayOfWeek = date.getDay();
+			const dateStr = `${year}-${String(monthNum).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+			if (scoutWindow && !isDateAllowedByScoutWindow(dateStr, scoutWindow)) {
+				continue;
+			}
+
 			const rules = rulesByDay.get(dayOfWeek);
 
 			// No availability rules for this day
 			if (!rules || rules.length === 0) continue;
 
 			// Check if at least one slot is available
-			const dateStr = `${year}-${String(monthNum).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 			let hasAvailableSlot = false;
 
 			for (const rule of rules) {
