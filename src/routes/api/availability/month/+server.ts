@@ -87,29 +87,42 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		}
 
 		const eventType = await db
-			.prepare('SELECT id, duration_minutes as duration, availability_calendars FROM event_types WHERE user_id = ? AND slug = ? AND is_active = 1')
+			.prepare('SELECT id, duration_minutes as duration, availability_calendars, scout_window FROM event_types WHERE user_id = ? AND slug = ? AND is_active = 1')
 			.bind(user.id, eventSlug)
-			.first<{ id: string; duration: number; availability_calendars: string | null }>();
+			.first<{ id: string; duration: number; availability_calendars: string | null; scout_window?: string | null }>();
 
 		if (!eventType) {
 			throw error(404, 'Event type not found or inactive');
 		}
+
+		const scoutWindow = parseScoutWindow(eventType.scout_window);
 
 		// Get calendar settings: use event type override if set, otherwise use global settings
 		const availabilityCalendars = eventType.availability_calendars || userSettings.defaultAvailabilityCalendars || 'both';
 		const useGoogleCalendar = availabilityCalendars === 'google' || availabilityCalendars === 'both';
 		const useOutlookCalendar = availabilityCalendars === 'outlook' || availabilityCalendars === 'both';
 
-		// Get all availability rules for this user
-		const allRules = await db
+		let allRules = await db
 			.prepare(
 				`SELECT day_of_week, start_time, end_time
 				FROM availability_rules
-				WHERE user_id = ?
+				WHERE user_id = ? AND event_type_id = ?
 				ORDER BY day_of_week, start_time`
 			)
-			.bind(user.id)
+			.bind(user.id, eventType.id)
 			.all<{ day_of_week: number; start_time: string; end_time: string }>();
+
+		if (!allRules.results || allRules.results.length === 0) {
+			allRules = await db
+				.prepare(
+					`SELECT day_of_week, start_time, end_time
+					FROM availability_rules
+					WHERE user_id = ? AND event_type_id IS NULL
+					ORDER BY day_of_week, start_time`
+				)
+				.bind(user.id)
+				.all<{ day_of_week: number; start_time: string; end_time: string }>();
+		}
 
 		// Group rules by day of week
 		const rulesByDay = new Map<number, Array<{ start_time: string; end_time: string }>>();
@@ -256,3 +269,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		throw error(500, 'Failed to fetch monthly availability');
 	}
 };
+
+function parseScoutWindow(value: string | null | undefined): any | null {
+	if (!value) return null;
+	try { return JSON.parse(value); } catch { return null; }
+}
+
+function isDateAllowedByScoutWindow(date: string, scoutWindow: any): boolean {
+	if (date < scoutWindow.startDate || date > scoutWindow.endDate) return false;
+	if ((scoutWindow.excludedDates || []).includes(date)) return false;
+	return true;
+}

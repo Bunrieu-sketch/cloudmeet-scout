@@ -60,9 +60,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		}
 
 		const eventType = await db
-			.prepare('SELECT id, duration_minutes as duration, availability_calendars FROM event_types WHERE user_id = ? AND slug = ? AND is_active = 1')
+			.prepare('SELECT id, duration_minutes as duration, availability_calendars, scout_window FROM event_types WHERE user_id = ? AND slug = ? AND is_active = 1')
 			.bind(user.id, eventSlug)
-			.first<{ id: string; duration: number; availability_calendars: string | null }>();
+			.first<{ id: string; duration: number; availability_calendars: string | null; scout_window?: string | null }>();
 
 		if (!eventType) {
 			throw error(404, 'Event type not found or inactive');
@@ -73,20 +73,36 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		const useGoogleCalendar = availabilityCalendars === 'google' || availabilityCalendars === 'both';
 		const useOutlookCalendar = availabilityCalendars === 'outlook' || availabilityCalendars === 'both';
 
+		const scoutWindow = parseScoutWindow(eventType.scout_window);
+		if (scoutWindow && !isDateAllowedByScoutWindow(date, scoutWindow)) {
+			return json({ slots: [] });
+		}
+
 		// Parse date
 		const requestedDate = new Date(date);
 		const dayOfWeek = requestedDate.getDay();
 
-		// Get availability rules for this day
-		const availabilityRules = await db
+		let availabilityRules = await db
 			.prepare(
 				`SELECT start_time, end_time
 				FROM availability_rules
-				WHERE user_id = ? AND day_of_week = ?
+				WHERE user_id = ? AND event_type_id = ? AND day_of_week = ?
 				ORDER BY start_time`
 			)
-			.bind(user.id, dayOfWeek)
+			.bind(user.id, eventType.id, dayOfWeek)
 			.all<{ start_time: string; end_time: string }>();
+
+		if (!availabilityRules.results || availabilityRules.results.length === 0) {
+			availabilityRules = await db
+				.prepare(
+					`SELECT start_time, end_time
+					FROM availability_rules
+					WHERE user_id = ? AND event_type_id IS NULL AND day_of_week = ?
+					ORDER BY start_time`
+				)
+				.bind(user.id, dayOfWeek)
+				.all<{ start_time: string; end_time: string }>();
+		}
 
 		if (!availabilityRules.results || availabilityRules.results.length === 0) {
 			return json({ slots: [] });
@@ -260,3 +276,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		throw error(500, 'Failed to fetch availability');
 	}
 };
+
+function parseScoutWindow(value: string | null | undefined): any | null {
+	if (!value) return null;
+	try { return JSON.parse(value); } catch { return null; }
+}
+
+function isDateAllowedByScoutWindow(date: string, scoutWindow: any): boolean {
+	if (date < scoutWindow.startDate || date > scoutWindow.endDate) return false;
+	if ((scoutWindow.excludedDates || []).includes(date)) return false;
+	return true;
+}
